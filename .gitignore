@@ -1,0 +1,9 @@
+build/
+dist*/
+__pycache__/
+*.pyc
+# Nunca: licencias, configuración ni claves
+*.lic
+*.pem
+config.CFA
+app_config.json

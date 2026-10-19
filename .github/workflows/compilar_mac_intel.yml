@@ -1,0 +1,153 @@
+# Compila EasySEM para macOS en Mac con procesador Intel (x86_64), con R y JAGS portables.
+# Es el mismo proceso que compilar_mac.yml (Apple Silicon): mismo programa (semQt_mac.py) y mismos
+# scripts del R portable (mac/); cambian el Mac de compilación, el spec (mac_intel/) y el .dmg.
+# Se lanza a mano (Actions -> "Compilar EasySEM para macOS Intel" -> Run workflow) o al subir una
+# etiqueta v* (p. ej. v1.0-mac), que publica el .dmg en Releases junto al de Apple Silicon.
+# Plan y detalles: EasySEM_portable_MAC.md (§11) y mac_intel/LEEME.md
+name: Compilar EasySEM para macOS Intel
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# Escritura en el contenido del repositorio: necesaria para publicar el .dmg en Releases
+permissions:
+  contents: write
+
+jobs:
+  macos-intel:
+    runs-on: macos-15-intel      # Mac con procesador Intel (x86_64)
+    timeout-minutes: 150
+    env:
+      R_VERSION: "4.6.1"
+      JAGS_VERSION: "4.3.2"
+      PYTHON_VERSION: "3.11"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      RUNTIME_DIR: build/mac_runtime
+      EASYSEM_NO_SPLASH: "1"
+
+    steps:
+      - name: Código
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: R ${{ env.R_VERSION }} (x86_64, CRAN)
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ env.R_VERSION }}
+          use-public-rspm: false
+
+      - name: JAGS ${{ env.JAGS_VERSION }}
+        run: |
+          curl -fsSL -o JAGS.pkg "https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/JAGS-${JAGS_VERSION}.pkg/download"
+          sudo installer -pkg JAGS.pkg -target /
+          ls -l /usr/local/lib/libjags* /usr/local/libexec/jags-terminal
+
+      - name: Graphviz (Homebrew)
+        run: |
+          brew install graphviz
+          dot -V
+
+      - name: Paquetes de R (últimas versiones binarias de CRAN, sin documentación)
+        run: |
+          sudo chown -R "$(whoami)" /Library/Frameworks/R.framework
+          Rscript --vanilla preparar_R_portable.R
+
+      - name: Paquetes de Python
+        env:
+          RPY2_CFFI_MODE: ABI
+        run: |
+          python -m pip install --upgrade pip
+          # cryptography solo como paquete precompilado (ver mac_intel/requirements_mac_intel.txt)
+          pip install --only-binary=cryptography -r mac_intel/requirements_mac_intel.txt
+
+      - name: Generar R y JAGS portables (reubicados y firmados)
+        run: bash mac/preparar_R_portable_mac.sh "$RUNTIME_DIR"
+
+      - name: Probar R portable con el R y el JAGS del sistema retirados
+        run: |
+          sudo mv /Library/Frameworks/R.framework /Library/Frameworks/R.framework.easysem_off
+          sudo mkdir -p /tmp/jags_off && sudo mv /usr/local/lib/libjags* /usr/local/lib/libjrmath* /usr/local/lib/JAGS /tmp/jags_off/
+          bash mac/probar_R_portable_mac.sh "$RUNTIME_DIR"
+          sudo mv /Library/Frameworks/R.framework.easysem_off /Library/Frameworks/R.framework
+          sudo mv /tmp/jags_off/* /usr/local/lib/
+
+      - name: Compilar EasySEM.app (PyInstaller)
+        env:
+          RPY2_CFFI_MODE: ABI
+        run: |
+          pyinstaller --noconfirm --distpath dist_mac --workpath build/pyinstaller_mac mac_intel/semQt_mac_intel.spec
+          ditto "$RUNTIME_DIR/R" dist_mac/EasySEM.app/Contents/Resources/R
+          ditto "$RUNTIME_DIR/JAGS" dist_mac/EasySEM.app/Contents/Resources/JAGS
+          # Firma ad hoc de toda la aplicación (la copia de R invalida la firma de PyInstaller)
+          codesign --force --sign - dist_mac/EasySEM.app
+          codesign --verify --verbose dist_mac/EasySEM.app
+          du -sh dist_mac/EasySEM.app
+
+      - name: Autocomprobación de la aplicación (sin R ni JAGS del sistema)
+        run: |
+          sudo mv /Library/Frameworks/R.framework /Library/Frameworks/R.framework.easysem_off
+          sudo mkdir -p /tmp/jags_off && sudo mv /usr/local/lib/libjags* /usr/local/lib/libjrmath* /usr/local/lib/JAGS /tmp/jags_off/
+          LOG="$HOME/Library/Application Support/EasySEM/easysem_errores.log"
+          if ! EASYSEM_SELFTEST_OUT="$PWD/selftest.json" QT_QPA_PLATFORM=offscreen \
+               dist_mac/EasySEM.app/Contents/MacOS/sem --easysem-selftest; then
+            echo "---- Registro de errores de EasySEM ----"; tail -n 80 "$LOG" || true
+            exit 1
+          fi
+
+      # Firma Developer ID y notarización (opcional, requiere cuenta Apple Developer).
+      # Para activarla, defina los secretos APPLE_CERT_P12 (base64), APPLE_CERT_PASSWORD,
+      # APPLE_ID, APPLE_TEAM_ID y APPLE_APP_PASSWORD, y cambie «if: false» por «if: true».
+      - name: Firma Developer ID y notarización
+        if: false
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p easysem build.keychain
+          security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k easysem build.keychain
+          security list-keychains -s build.keychain
+          IDENTITY="Developer ID Application: $(security find-identity -v build.keychain | sed -n 's/.*Developer ID Application: \(.*\)"/\1/p' | head -1)"
+          find dist_mac/EasySEM.app/Contents/Resources/R dist_mac/EasySEM.app/Contents/Resources/JAGS \
+            -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \) -exec \
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" {} \; 2>/dev/null || true
+          codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" dist_mac/EasySEM.app
+          ditto -c -k --keepParent dist_mac/EasySEM.app EasySEM.zip
+          xcrun notarytool submit EasySEM.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple dist_mac/EasySEM.app
+
+      - name: Crear EasySEM-macOS-intel.dmg
+        run: |
+          mkdir -p dmg_src
+          ditto dist_mac/EasySEM.app dmg_src/EasySEM.app
+          ln -s /Applications dmg_src/Aplicaciones
+          hdiutil create -volname "EasySEM" -srcfolder dmg_src -ov -format UDZO EasySEM-macOS-intel.dmg
+          ls -lh EasySEM-macOS-intel.dmg
+
+      - name: Subir el .dmg (Artifacts de esta ejecución)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasySEM-macOS-intel
+          path: |
+            EasySEM-macOS-intel.dmg
+            selftest.json
+          # 7 días: cada .dmg ocupa unos 700 MB y el almacenamiento de Actions es limitado
+          # (2 GB con GitHub Pro). Las versiones definitivas se publican en Releases (etiqueta v*).
+          retention-days: 7
+
+      - name: Publicar en Releases (solo con etiqueta v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: EasySEM-macOS-intel.dmg

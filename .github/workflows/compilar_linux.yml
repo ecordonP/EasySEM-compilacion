@@ -1,0 +1,149 @@
+# Compila EasySEM para Linux (x86_64) con R y JAGS portables: mismo programa que la versión
+# portable de Windows (semQt_linux.py se genera a partir de semQt_portable.py).
+# Se compila en Ubuntu 22.04 (glibc 2.35): funciona en Ubuntu 22.04 o posterior, Debian 12,
+# Fedora 36+, Linux Mint 21+ y otras distribuciones de esa época o más nuevas.
+# Se lanza a mano (Actions -> "Compilar EasySEM para Linux" -> Run workflow) o al subir una
+# etiqueta v*, que además publica el AppImage y el .tar.gz en Releases.
+# Detalles: linux/LEEME.md
+name: Compilar EasySEM para Linux
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# Escritura en el contenido del repositorio: necesaria para publicar en Releases
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    env:
+      R_VERSION: "4.6.1"
+      JAGS_VERSION: "4.3.2"
+      PYTHON_VERSION: "3.11"
+      RUNTIME_DIR: build/linux_runtime
+      EASYSEM_NO_SPLASH: "1"
+
+    steps:
+      - name: Código
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Paquetes del sistema (compilación, Graphviz, fuentes y bibliotecas de Qt)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gfortran pkg-config patchelf libblas-dev liblapack-dev \
+            libcurl4-openssl-dev libssl-dev libxml2-dev libglpk-dev libgmp-dev libmpfr-dev \
+            libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libfribidi-dev libpng-dev \
+            libjpeg-dev libtiff5-dev libcairo2-dev libicu-dev libv8-dev libsodium-dev \
+            graphviz fonts-liberation \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libdbus-1-3 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxcb-xfixes0
+          dot -V
+
+      - name: R ${{ env.R_VERSION }} (Posit)
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: ${{ env.R_VERSION }}
+          use-public-rspm: true
+
+      - name: JAGS ${{ env.JAGS_VERSION }} (compilado desde el código fuente)
+        run: |
+          curl -fsSL -o JAGS.tar.gz "https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Source/JAGS-${JAGS_VERSION}.tar.gz/download"
+          tar xzf JAGS.tar.gz
+          cd "JAGS-${JAGS_VERSION}"
+          ./configure --prefix=/usr/local --quiet
+          make -j"$(nproc)" > /dev/null
+          sudo make install > /dev/null
+          sudo ldconfig
+          ls -l /usr/local/lib/libjags* /usr/local/libexec/jags-terminal /usr/local/lib/JAGS/modules-4
+
+      - name: Paquetes de R (últimas versiones, binarios de Posit Package Manager, sin documentación)
+        run: |
+          sudo chown -R "$(whoami)" "$(Rscript -e 'cat(R.home())')"
+          Rscript --vanilla preparar_R_portable.R
+
+      - name: Paquetes de Python
+        env:
+          RPY2_CFFI_MODE: ABI
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r linux/requirements_linux.txt
+
+      - name: Generar R y JAGS portables (rutas relativas)
+        run: bash linux/preparar_R_portable_linux.sh "$RUNTIME_DIR"
+
+      - name: Probar R portable con el R y el JAGS del sistema retirados
+        run: |
+          bash linux/retirar_R_JAGS_sistema.sh retirar
+          bash linux/probar_R_portable_linux.sh "$RUNTIME_DIR"
+          # PyInstaller necesita el R del sistema para analizar rpy2
+          bash linux/retirar_R_JAGS_sistema.sh restaurar
+
+      - name: Compilar EasySEM (PyInstaller)
+        env:
+          RPY2_CFFI_MODE: ABI
+        run: |
+          pyinstaller --noconfirm --distpath dist_linux --workpath build/pyinstaller_linux linux/semQt_linux.spec
+          # Lanzador de dot: EasySEM quita _internal de LD_LIBRARY_PATH para los programas del
+          # sistema; dot (y sus complementos) sí necesitan las bibliotecas de _internal.
+          # «exec -a» conserva el nombre «dot» (en Ubuntu es un ejecutable multiuso).
+          GV=dist_linux/EasySEM/_internal/graphviz_bin
+          mv "$GV/dot" "$GV/dot.bin"
+          printf '%s\n' '#!/bin/bash' \
+            'INTERNAL="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd -P)"' \
+            'export LD_LIBRARY_PATH="$INTERNAL${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+            'exec -a "$0" "$INTERNAL/graphviz_bin/dot.bin" "$@"' > "$GV/dot"
+          chmod +x "$GV/dot" "$GV/dot.bin"
+          cp -a "$RUNTIME_DIR/R" "$RUNTIME_DIR/JAGS" dist_linux/EasySEM/
+          for f in config.CFA licencia.md logoEasyCFA.png logoEasySEM.png iconEasySEM.ico iconEasyCFA.ico; do
+            [ -f "$f" ] && cp "$f" dist_linux/EasySEM/
+          done
+          ls -l dist_linux/EasySEM/_internal/graphviz_bin dist_linux/EasySEM/_internal/fonts || true
+          du -sh dist_linux/EasySEM
+
+      - name: Autocomprobación de la aplicación (sin R ni JAGS del sistema)
+        run: |
+          bash linux/retirar_R_JAGS_sistema.sh retirar
+          LOG="$HOME/.local/share/EasySEM/easysem_errores.log"
+          if ! EASYSEM_SELFTEST_OUT="$PWD/selftest.json" QT_QPA_PLATFORM=offscreen \
+               dist_linux/EasySEM/sem --easysem-selftest; then
+            echo "---- Registro de errores de EasySEM ----"; tail -n 80 "$LOG" || true
+            exit 1
+          fi
+
+      - name: Crear AppImage y .tar.gz
+        run: bash linux/crear_paquetes_linux.sh dist_linux/EasySEM paquetes
+
+      - name: Probar en distribuciones limpias (sin R, JAGS, Python ni Graphviz)
+        run: bash linux/probar_distribuciones.sh paquetes
+
+      - name: Subir AppImage y .tar.gz (Artifacts de esta ejecución)
+        uses: actions/upload-artifact@v4
+        with:
+          name: EasySEM-linux-x86_64
+          path: |
+            paquetes/EasySEM-linux-x86_64.AppImage
+            paquetes/EasySEM-linux-x86_64.tar.gz
+            selftest.json
+          # 7 días: el almacenamiento de Actions es limitado (2 GB con GitHub Pro).
+          # Las versiones definitivas se publican en Releases (etiqueta v*).
+          retention-days: 7
+          compression-level: 0
+
+      - name: Publicar en Releases (solo con etiqueta v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            paquetes/EasySEM-linux-x86_64.AppImage
+            paquetes/EasySEM-linux-x86_64.tar.gz

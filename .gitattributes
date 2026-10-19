@@ -1,0 +1,7 @@
+*.sh text eol=lf
+*.yml text eol=lf
+*.R text eol=lf
+*.spec -text
+obf_mac/** binary
+obf_mac_intel/** binary
+obf_linux/** binary
