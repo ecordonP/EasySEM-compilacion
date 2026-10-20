@@ -33,8 +33,9 @@ if __name__ == "__easysem_stub__":
     from rpy2.robjects.conversion import localconverter
     from scipy import optimize as scipy_optimize
     from scipy import stats as scipy_stats
+    from scipy.stats import chi2, ncx2
     from scipy.stats import chi2, skew, kurtosis
-    from scipy.stats import ncx2
+    from scipy.stats import norm
     from semopy import polycorr as semopy_polycorr
     from semopy.examples import holzinger39
     from semopy.plot import semplot
