@@ -176,11 +176,11 @@ app = BUNDLE(
     name='EasySEM.app',
     icon=os.path.join(ROOT, 'iconEasySEM.ico'),   # PyInstaller lo convierte a .icns con Pillow
     bundle_identifier='es.ugr.easysem',
-    version='1.0',
+    version='1.2.0',
     info_plist={
         'CFBundleName': 'EasySEM',
         'CFBundleDisplayName': 'EasySEM',
-        'CFBundleShortVersionString': '1.0',
+        'CFBundleShortVersionString': '1.2.0',
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '13.0',
         'LSArchitecturePriority': ['arm64'],
