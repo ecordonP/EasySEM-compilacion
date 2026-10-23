@@ -22,7 +22,7 @@ lib <- normalizePath(file.path(R.home(), "library"), winslash = "/")
 
 pkgs <- c(
   # Esenciales (CFAApp._R_REQUIRED_PACKAGES)
-  "lavaan", "blavaan", "semTools", "misty", "mvnmle", "mice", "semPlot", "lavaangui", "shiny",
+  "lavaan", "blavaan", "semTools", "misty", "mvnmle", "mice", "lavaan.mi", "semPlot", "lavaangui", "shiny",
   # Complementarias
   "lavaanExtra", "lavaanPlot", "MVN", "psych", "naniar", "car", "nonnest2", "haven", "ltm",
   "nortest", "performance", "effectsize", "mvoutlier", "MissMech", "coefficientalpha", "easystats",
